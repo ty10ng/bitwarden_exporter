@@ -40,7 +40,7 @@ The playbook uses a lock file (`bitwarden_export_playbook.lock`) in the backup d
 - In case of failure, a notification is sent to Slack with the hostname and timestamp, prompting for manual investigation.
 
 ## Cleanup
-The playbook includes a cleanup step to remove temporary files (unencrypted) files related to the backup job.
+The playbook includes a cleanup step to remove temporary (unencrypted) files related to the backup job.
 
 ## Security and Usage Note
 - Handle sensitive information, like passwords and tokens, with utmost care.
