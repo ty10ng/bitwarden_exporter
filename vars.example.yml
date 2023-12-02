@@ -1,0 +1,8 @@
+---
+bw_email: "your-bitwarden-email"
+bw_password: "your-bitwarden-password"
+bw_server_url: "https://your-bitwarden-vault"
+gpg_backup_recipient: "your-gpg-name"
+gpg_backup_passphrase: 'your-gpg-passphrase'
+slack_token: "your-slack-webhook-token"
+slack_channel: "#your-slack-channel"
