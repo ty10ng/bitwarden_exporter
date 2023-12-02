@@ -24,15 +24,15 @@ Create a `vars.yml` file based on the provided `vars.example.yml` template. Fill
 ## Running the Playbook
 1. Build the Docker image using the provided Dockerfile:
 
-   \```
+   ```
    docker build -t bitwarden_exporter:latest .
-   \```
+   ```
 
 2. Execute the `run.sh` script to run the Ansible playbook within the Docker container:
 
-   \```
+   ```
    ./run.sh [encrypt]
-   \```
+   ```
 
    Add the `encrypt` argument to enable GPG encryption.
 
