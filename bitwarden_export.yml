@@ -1,0 +1,192 @@
+---
+- name: Bitwarden Export Data Playbook
+  hosts: localhost
+  gather_facts: no
+  vars:
+    bw_email: "{{ lookup('env','BITWARDEN_BACKUP_EMAIL') }}"
+    bw_password: "{{ lookup('env','BITWARDEN_BACKUP_PASSWD') }}"
+    bw_server_url: "{{ lookup('env','BITWARDEN_BACKUP_URL') }}"
+    gpg_backup_recipient: "{{ lookup('env','BITWARDEN_BACKUP_GPG_RECIPIENT') }}"
+    gpg_backup_passphrase: "{{ lookup('env','BITWARDEN_BACKUP_GPG_PASSPHRASE') }}"
+    root_backup_path: "{{ lookup('env','BITWARDEN_BACKUP_FOLDER') }}"
+    slack_token: "{{ lookup('env', 'BITWARDEN_BACKUP_SLACK_TOKEN') }}"
+    slack_channel: "{{ lookup('env', 'BITWARDEN_BACKUP_SLACK_CHANNEL') }}"    
+    task_failed: False
+  tasks:
+    - name: Main block
+      block:
+      # Generate a unique timestamp for the backup
+      - name: Generate epoch timestamp
+        set_fact:
+          epoch_timestamp: "{{ lookup('pipe', 'date +%s') }}"
+      - name: Check for existing Bitwarden export playbook lock file
+        ansible.builtin.stat:
+          path: "{{ root_backup_path }}/bitwarden_export_playbook.lock"
+        register: lock_file
+      - name: Fail if Bitwarden export playbook lock file exists
+        fail:
+          msg: "Bitwarden export playbook lock file exists, another instance of the playbook is running."
+        when: lock_file.stat.exists
+      - name: Create Bitwarden export playbook lock file
+        ansible.builtin.file:
+          path: "{{ root_backup_path }}/bitwarden_export_playbook.lock"
+          state: touch
+        when: not lock_file.stat.exists
+      # Ensure prerequisite packages are installed
+      - name: Install prerequisite packages
+        become: yes
+        ansible.builtin.package:
+          name:
+            - gnupg
+            - jq
+          state: present
+      - name: Check if Bitwarden CLI is installed
+        ansible.builtin.shell: command -v bw
+        register: bw_installed
+        ignore_errors: yes
+      # Download and install Bitwarden CLI
+      - name: Download Bitwarden CLI
+        ansible.builtin.get_url:
+          url: "https://vault.bitwarden.com/download/?app=cli&platform=linux" # Update URL if necessary for your platform
+          dest: "/tmp/bw.zip"
+          mode: '0755'
+        when: bw_installed.rc != 0
+      - name: Unzip Bitwarden CLI
+        ansible.builtin.unarchive:
+          src: "/tmp/bw.zip"
+          dest: "/usr/local/bin"
+          remote_src: yes
+        become: yes
+        when: bw_installed.rc != 0
+      # Create directories for backup and attachments
+      - name: Create backup directories
+        file:
+          path: "{{ item }}"
+          state: directory
+        loop:
+          - "{{ root_backup_path }}/{{ epoch_timestamp }}"
+          - "{{ root_backup_path }}/{{ epoch_timestamp }}/attachments"
+      # Set the Bitwarden server URL
+      - name: Configure Bitwarden server URL
+        command: bw config server "{{ bw_server_url }}"
+      # Logout of any existing Bitwarden sessions
+      - name: Logout of existing sessions
+        command: bw logout
+        ignore_errors: True
+      # Login to Bitwarden
+      - name: Log in to Bitwarden
+        command: bw login "{{ bw_email }}" "{{ bw_password }}"
+        no_log: True
+      # Unlock Bitwarden vault
+      - name: Unlock Bitwarden vault
+        command: bw unlock "{{ bw_password }}" --raw
+        register: bw_unlock
+        no_log: True
+      # Set Bitwarden session environment variable
+      - name: Set Bitwarden session environment variable
+        set_fact:
+          bw_session: "{{ bw_unlock.stdout }}"
+      # Export Bitwarden data to JSON format
+      - name: Export Bitwarden data to JSON
+        command: bw export --session "{{ bw_session }}" --format json --output {{ root_backup_path }}/{{ epoch_timestamp }}/bitwarden_export.json
+        args:
+          chdir: "{{ root_backup_path }}/{{ epoch_timestamp }}"
+        no_log: True
+      - name: Generate SHA-256 hash of the JSON file
+        ansible.builtin.shell:
+          cmd: sha256sum "{{ root_backup_path }}/{{ epoch_timestamp }}/bitwarden_export.json"
+        register: json_sha256_validation
+        changed_when: False
+      - name: Write SHA-256 hash to validation file
+        ansible.builtin.copy:
+          content: "{{ json_sha256_validation.stdout.split(' ')[0] }}"
+          dest: "{{ root_backup_path }}/{{ epoch_timestamp }}/validation_sha256.txt"
+      # Check and list items with attachments
+      - name: Check for items with attachments
+        shell: bw list items --session "{{ bw_session }}" | jq -r '[.[] | select(.attachments != null)]'
+        register: items_with_attachments
+        ignore_errors: yes
+      # Download attachments if any exist
+      - name: Download attachments
+        shell: bw get attachment "{{ item.attachments[0].fileName }}" --itemid "{{ item.id }}" --session "{{ bw_session }}" --output "{{ root_backup_path }}/{{ epoch_timestamp }}/attachments/{{ item.name }}/"
+        loop: "{{ (items_with_attachments.stdout | from_json) }}"
+        when: items_with_attachments.stdout != "" and items_with_attachments.rc == 0
+        no_log: True
+      # Display message if no attachments exist
+      - name: Report no attachments
+        debug:
+          msg: "No attachments exist, so nothing to export."
+        when: items_with_attachments.stdout == "" or items_with_attachments.rc != 0
+      # Create a tar.gz archive of the exported data
+      - name: Create tar.gz archive of the export
+        ansible.builtin.archive:
+          path: "{{ root_backup_path }}/{{ epoch_timestamp }}"
+          dest: "{{ root_backup_path }}/{{ epoch_timestamp }}.tar.gz"
+          format: gz
+      - name: Encrypt backup archive with GPG
+        ansible.builtin.shell:
+          cmd: "gpg --armor --recipient {{ gpg_backup_recipient }} --batch --passphrase \"{{ gpg_backup_passphrase }}\" --cipher-algo AES256 --output {{ root_backup_path }}/{{ epoch_timestamp }}.tar.gz.asc --encrypt {{ root_backup_path }}/{{ epoch_timestamp }}.tar.gz"
+        no_log: True
+      # Cleanup - Remove the uncompressed/unencrypted backup files
+      - name: Cleanup - Remove the uncompressed/unencrypted backup files
+        file:
+          path: "{{ item }}"
+          state: absent
+        loop:
+          - "{{ root_backup_path }}/{{ epoch_timestamp }}"
+          - "{{ root_backup_path }}/{{ epoch_timestamp }}.tar.gz"
+      # Validation - Validate the backup by analyzing the SHA256 of the JSON with what we captured before encyption
+      - name: Decrypt backup archive with GPG
+        ansible.builtin.shell:
+          cmd: "gpg --batch --pinentry-mode loopback --passphrase '{{ gpg_backup_passphrase }}' --decrypt --output {{ root_backup_path }}/{{ epoch_timestamp }}.tar.gz {{ root_backup_path }}/{{ epoch_timestamp }}.tar.gz.asc"
+        no_log: True
+      - name: Extract tar.gz archive of the backup
+        ansible.builtin.unarchive:
+          src: "{{ root_backup_path }}/{{ epoch_timestamp }}.tar.gz"
+          dest: "{{ root_backup_path }}"
+          remote_src: yes
+      - name: Generate SHA-256 hash of the extracted JSON file
+        ansible.builtin.shell:
+          cmd: "sha256sum {{ root_backup_path }}/{{ epoch_timestamp }}/bitwarden_export.json"
+        register: extracted_json_sha256
+        changed_when: False
+      - name: Compare the SHA-256 hashes
+        ansible.builtin.shell:
+          cmd: "test $(cat {{ root_backup_path }}/{{ epoch_timestamp }}/validation_sha256.txt) = '{{ extracted_json_sha256.stdout.split(' ')[0] }}'"
+        register: hash_comparison_result
+        failed_when: hash_comparison_result.rc != 0
+        changed_when: False
+      - name: Remove Bitwarden export playbook lock file
+        file:
+          path: "{{ root_backup_path }}/bitwarden_export_playbook.lock"
+          state: absent
+      rescue:
+        - name: Flip our failure flag
+          set_fact:
+            task_failed: true
+        - name: Fail the playbook
+          fail:
+            msg: "{{ ansible_failed_result | default('') }}"
+      always:
+        - name: Send success notification to Slack
+          community.general.slack:
+            token: "{{ slack_token }}"
+            channel: "{{ slack_channel }}"
+            msg: "Bitwarden Export Process Completed Successfully - Host: {{ lookup('pipe', 'hostname') }}, Time: {{ lookup('pipe', 'date') }}"
+          when: (not task_failed | default(false)) and (slack_token != '')
+          ignore_errors: True
+        - name: Send failure notification to Slack
+          community.general.slack:
+            token: "{{ slack_token }}"
+            channel: "{{ slack_channel }}"
+            msg: "Bitwarden Export Process Failed on Host: {{ lookup('pipe', 'hostname') }} at {{ lookup('pipe', 'date') }}. Manual action will be required to investigate the cause of the failure."
+          when: (task_failed | default(false)) and (slack_token != '')
+          ignore_errors: True
+        - name: Cleanup - Remove the uncompressed/unencrypted backup files used by the validation step
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ root_backup_path }}/{{ epoch_timestamp }}"
+            - "{{ root_backup_path }}/{{ epoch_timestamp }}.tar.gz"
+
