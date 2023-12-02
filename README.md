@@ -18,6 +18,26 @@ The playbook, now containerized, addresses the need for a robust backup strategy
 ## Docker Environment Setup
 The Docker container includes all necessary dependencies, such as Ansible and the Bitwarden CLI. Before running the playbook, ensure Docker is properly set up and running on your system.
 
+## GPG Encryption
+
+The playbook includes an optional feature for GPG encryption to enhance the security of your backups. When enabled, it encrypts the backup archive using GPG keys, and will remove the temporary (decrypted) archive in the specified `backup` folder. You will be left with an encrypted `epoch.tar.gz.asc` file. Be sure to test the encrypted file before placing it in cold storage.
+
+### Key Considerations
+
+- **User-Specific Keys**: The GPG encryption is configured to use the GPG key of the user running the Docker image. It's important that this user has their GPG keys properly set up and accessible to the Docker environment.
+
+- **Enabling Encryption**: To enable GPG encryption, run the `run.sh` script with the `encrypt` argument. This triggers the playbook to perform encryption using the specified GPG recipient and passphrase:
+
+  ```
+  ./run.sh encrypt
+  ```
+
+- **Security Best Practices**: Ensure that your GPG keys are securely managed and stored. Avoid exposing your private keys and use strong, unique passphrases for your GPG keys.
+
+- **Key Accessibility**: When running the Docker container, ensure that the GPG keys are accessible within the container. This may require mounting the appropriate directories or keyrings as Docker volumes.
+
+By leveraging GPG encryption, you add an additional layer of security to your Bitwarden data backups, safeguarding against unauthorized access and ensuring data privacy.
+
 ## Configuration File
 Create a `vars.yml` file based on the provided `vars.example.yml` template. Fill in the Bitwarden credentials, server URL, GPG details, and Slack tokens.
 
@@ -34,7 +54,7 @@ Create a `vars.yml` file based on the provided `vars.example.yml` template. Fill
    ./run.sh [encrypt]
    ```
 
-   Add the `encrypt` argument to enable GPG encryption.
+   Add the `encrypt` argument to enable GPG encryption of the backup archive.
 
 ## Notifications
 - On successful completion, a message is sent to the configured Slack channel with details about the host and time of execution.
